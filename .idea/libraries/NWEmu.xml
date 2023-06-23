@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="NWEmu">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/RK5/src/NWEmu.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
