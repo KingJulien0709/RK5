@@ -2,121 +2,106 @@ import fau.cs7.nwemu.*;
 import java.util.LinkedList;
 
 public class GoBackN {
-    static int nsimmax = 100;
-    static double lossprob = 0.2;
-    static double corruptprob = 0.2;
-    static double lambda = 10;
 
     public static void main(String[] args) {
-        Sender1 sender = new Sender1();
-        Receiver1 receiver = new Receiver1();
-        NWEmu nwEmu = new NWEmu(sender, receiver);
-        nwEmu.emulate(nsimmax, lossprob, corruptprob, lambda, 2);
-    }
-}
 
-class Sender1 extends AbstractHost {
-    private int base;
-    private int nextSeqNum;
-    private LinkedList<NWEmuPkt> buffer;
-
-    @Override
-    public Boolean output(NWEmuMsg message) {
-        // Check if the buffer is full
-        if (buffer.size() >= 8) {
-            return false;
+        // declare stuff needed by sender AND receiver in this class
+        class CommonHost extends AbstractHost {
+            int seqnum;
+            int acknum;
         }
 
-        // Create a new packet with the message and the current sequence number
-        NWEmuPkt packet = new NWEmuPkt();
-        packet.seqnum = nextSeqNum;
-        packet.payload = message.data;
+        // class representing the sender
+        class SendingHost extends CommonHost {
+            private LinkedList<NWEmuPkt> buffer;
+            private int base;
+            private int nextSeqnum;
+            private double timeout;
 
-        // Add the packet to the buffer
-        buffer.add(packet);
-
-        // If the packet is the first in the window, start the timer
-        if (nextSeqNum == base) {
-            startTimer(100);
-        }
-
-        // Send the packet
-        toLayer3(packet);
-
-        // Increment the next sequence number
-        nextSeqNum++;
-
-        return true;
-    }
-
-    @Override
-    public void input(NWEmuPkt packet) {
-        // Check if the received packet is the one expected (in-order)
-        if (packet.acknum >= base && packet.acknum < base + 8) {
-            // Update the base to the next sequence number after the acknowledged packet
-            base = packet.acknum + 1;
-
-            // Remove acknowledged packets from the buffer
-            while (!buffer.isEmpty() && buffer.peek().seqnum <= packet.acknum) {
-                buffer.remove();
+            public void init() {
+                sysLog(0, "Sending Host: init()");
+                seqnum = 0;
+                acknum = -1;
+                buffer = new LinkedList<>();
+                base = 0;
+                nextSeqnum = 0;
+                timeout = 100.0; // Set the initial timeout value (adjust as needed)
             }
 
-            // If there are still packets in the buffer, restart the timer
-            if (!buffer.isEmpty()) {
-                startTimer(100);
+            public Boolean output(NWEmuMsg message) {
+                if (isPacketInTransmission()) {
+                    sysLog(0, "Sending Host: output(" + message + ") -> Discarded (Packet in transmission or buffer full)");
+                    return false;
+                }
+
+                NWEmuPkt sndpkt = new NWEmuPkt();
+                for (int i = 0; i < NWEmu.PAYSIZE; i++) {
+                    sndpkt.payload[i] = message.data[i];
+                }
+                sndpkt.seqnum = seqnum++;
+                sndpkt.acknum = acknum;
+                sndpkt.checksum = 0;
+                sysLog(2, "Sending Host: output(" + message + ") failed, will be retried!");
+
+                return true;
+            }
+
+            private boolean isPacketInTransmission() {
+                return (nextSeqnum != base);
+            }
+
+            public void input(NWEmuPkt pkt) {
+                sysLog(0, "Sending Host: input(" + pkt + ") -> Discarded (Sender does not process incoming packets)");
+            }
+
+            public void timerInterrupt() {
+                sysLog(2, "Sending Host: timerInterrupt()");
+            }
+
+        }
+
+        // class representing the receiver
+        class ReceivingHost extends CommonHost {
+            private int expectedSeqnum;
+
+            public void init() {
+                sysLog(0, "Receiving Host: init()");
+                seqnum = -1;
+                acknum = 0;
+                expectedSeqnum = 0;
+            }
+
+            public void input(NWEmuPkt pkt) {
+                sysLog(2, "Receiving Host: input(" + pkt + ")");
+                if (pkt.seqnum == expectedSeqnum) {
+                    NWEmuMsg message = new NWEmuMsg();
+                    for (int i = 0; i < NWEmu.PAYSIZE; i++) {
+                        message.data[i] = pkt.payload[i];
+                    }
+                    sysLog(2, "Receiving Host: input(" + pkt + ") -> toLayer5(" + message + ")");
+                    toLayer5(message);
+
+                    expectedSeqnum = (expectedSeqnum + 1) % 2;
+                } else {
+                    sysLog(0, "Receiving Host: input(" + pkt + ") -> Discarded (Out-of-order packet)");
+                }
+
+                NWEmuPkt ackpkt = new NWEmuPkt();
+                ackpkt.acknum = pkt.seqnum;
+                ackpkt.checksum = 0;
+                sysLog(2, "Receiving Host: input(" + pkt + ") -> toLayer3(" + ackpkt + ")");
+                toLayer3(ackpkt);
+
             }
         }
-    }
 
-    @Override
-    public void timerInterrupt() {
-        // Resend all packets in the buffer
-        for (NWEmuPkt packet : buffer) {
-            toLayer3(packet);
-        }
+        // instantiate sender and receiver
+        SendingHost HostA = new SendingHost();
+        ReceivingHost HostB = new ReceivingHost();
 
-        // Restart the timer
-        startTimer(100);
-    }
-
-    @Override
-    public void init() {
-        base = 0;
-        nextSeqNum = 0;
-        buffer = new LinkedList<>();
+        // perform emulation
+        NWEmu TestEmu = new NWEmu(HostA, HostB);
+        TestEmu.randTimer();
+        TestEmu.emulate(20, 0.2, 0.2, 10.0, 2);
     }
 }
-
-class Receiver1 extends AbstractHost {
-    private int expectedSeqNum;
-
-    @Override
-    public void input(NWEmuPkt packet) {
-        // Check if the received packet is the one expected
-        if (packet.seqnum == expectedSeqNum) {
-            // Deliver the message to layer 5
-            NWEmuMsg message = new NWEmuMsg();
-            message.data = packet.payload;
-            toLayer5(message);
-
-            // Send an acknowledgment packet with the received sequence number
-            NWEmuPkt ackPacket = new NWEmuPkt();
-            ackPacket.acknum = expectedSeqNum;
-            toLayer3(ackPacket);
-
-            // Increment the expected sequence number
-            expectedSeqNum++;
-        } else {
-            // Send an acknowledgment packet with the last in-order sequence number
-            NWEmuPkt ackPacket = new NWEmuPkt();
-            ackPacket.acknum = expectedSeqNum - 1;
-            toLayer3(ackPacket);
-        }
-    }
-
-    @Override
-    public void init() {
-        expectedSeqNum = 0;
-    }
-}
-

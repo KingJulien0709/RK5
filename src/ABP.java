@@ -1,101 +1,97 @@
 import fau.cs7.nwemu.*;
-public class ABP {
-    static int nsimmax = 100;
-    static double lossprob = 0;
-    static double corruptprob = 0.5;
-    static double lambda = 1000;
 
+public class ABP {
 
     public static void main(String[] args) {
-        Sender sender = new Sender();
-        Receiver receiver = new Receiver();
-        NWEmu nwEmu = new NWEmu(sender, receiver);
-        nwEmu.emulate(nsimmax, lossprob, corruptprob, lambda,3);
-    }
-}
 
-class Sender extends AbstractHost {
-    private int sequenceNumber = 0;
-    private NWEmuPkt lastPacket;
-
-    @Override
-    public Boolean output(NWEmuMsg message) {
-        // If the last packet has not been acknowledged, return false
-        if (lastPacket != null && lastPacket.seqnum == sequenceNumber) {
-            return false;
+        // Declare stuff needed by sender AND receiver in this class
+        class CommonHost extends AbstractHost {
+            int seqnum;
+            int acknum;
         }
 
-        // Create a packet with the message and the current sequence number
-        NWEmuPkt packet = new NWEmuPkt();
-        packet.seqnum = sequenceNumber;
-        packet.payload = message.data;
-        lastPacket = packet;
+        // Class representing the sender
+        class SendingHost extends CommonHost {
+            public void init() {
+                sysLog(0, "Sending Host: init()");
+                seqnum = 0;
+                acknum = -1;
+            }
 
-        // Send the packet
-        toLayer3(packet);
+            public Boolean output(NWEmuMsg message) {
+                if (isPacketInTransmission()) {
+                    sysLog(0, "Sending Host: output(" + message + ") -> Discarded (Packet in transmission)");
+                    return false;
+                }
 
-        // Start the timer
-        startTimer(100);
+                NWEmuPkt sndpkt = new NWEmuPkt();
+                for (int i = 0; i < NWEmu.PAYSIZE; i++) {
+                    sndpkt.payload[i] = message.data[i];
+                }
+                sndpkt.seqnum = seqnum++;
+                sndpkt.acknum = acknum;
+                sndpkt.checksum = 0;
+                sysLog(0, "Sending Host: output(" + message + ") -> toLayer3(" + sndpkt + ")");
+                toLayer3(sndpkt);
 
-        return true;
-    }
+                return true;
+            }
 
-    @Override
-    public void input(NWEmuPkt packet) {
-        // Check the ACK number in the packet
-        if (packet.acknum == sequenceNumber) {
-            // If it matches the current sequence number, stop the timer
-            stopTimer();
+            private boolean isPacketInTransmission() {
+                // Check if a packet is still in transmission
+                // Return true if a packet is being transmitted, false otherwise
+                // Implement your logic here
+                return false; // Modify this line with your logic
+            }
 
-            // Switch the sequence number
-            sequenceNumber = 1 - sequenceNumber;
+            public void input(NWEmuPkt pkt) {
+                sysLog(0, "Sending Host: input(" + pkt + ")");
+            }
+
+            public void timerInterrupt() {
+                sysLog(0, "Sending Host: timerInterrupt()");
+            }
         }
-    }
 
-    @Override
-    public void timerInterrupt() {
-        // Resend the last packet
-        toLayer3(lastPacket);
+        // Class representing the receiver
+        class ReceivingHost extends CommonHost {
+            private int expectedSeqnum; // Variable to track the expected sequence number
 
-        // Restart the timer
-        startTimer(100);
-    }
+            public void init() {
+                sysLog(0, "Receiving Host: init()");
+                seqnum = -1;
+                acknum = 0;
+                expectedSeqnum = 0; // Initialize the expected sequence number
+            }
 
-    @Override
-    public void init() {
-        // Perform any necessary initializations
-    }
-}
+            public void input(NWEmuPkt pkt) {
+                if (pkt.seqnum == expectedSeqnum) {
+                    NWEmuMsg message = new NWEmuMsg();
+                    for (int i = 0; i < NWEmu.PAYSIZE; i++) {
+                        message.data[i] = pkt.payload[i];
+                    }
+                    sysLog(0, "Receiving Host: input(" + pkt + ") -> toLayer5(" + message + ")");
+                    toLayer5(message);
 
-class Receiver extends AbstractHost {
-    private int expectedSequenceNumber;
-    private int correctPackets;
-    @Override
-    public void input(NWEmuPkt packet) {
+                    expectedSeqnum = (expectedSeqnum + 1) % 2; // Update the expected sequence number
+                } else {
+                    sysLog(0, "Receiving Host: input(" + pkt + ") -> Discarded (Out-of-order packet)");
+                }
+            }
 
-        // Check the sequence number in the packet
-        if (packet.seqnum == expectedSequenceNumber){
-            // If it matches the expected sequence number, deliver the message to layer 5
-            NWEmuMsg message = new NWEmuMsg();
-            message.data = packet.payload;
-            toLayer5(message);
-
-            NWEmuPkt ackPacket = new NWEmuPkt();
-            ackPacket.acknum = expectedSequenceNumber;
-            toLayer3(ackPacket);
-
-            // Switch the expected sequence number
-            expectedSequenceNumber = 1 - expectedSequenceNumber;
-
-            //correctPackets++;
-            //if(correctPackets==10){System.exit(0); }
+            public void timerInterrupt() {
+                sysLog(0, "Receiving Host: timerInterrupt()");
+            }
         }
-    }
 
-    @Override
-    public void init() {
-        correctPackets = 0;
-        expectedSequenceNumber = 0;
-        // Perform any necessary initializations
+        // Instantiate sender and receiver
+        SendingHost HostA = new SendingHost();
+        ReceivingHost HostB = new ReceivingHost();
+
+        // Perform emulation
+        NWEmu TestEmu = new NWEmu(HostA, HostB);
+        TestEmu.randTimer();
+        TestEmu.emulate(10, 0.1, 0.3, 1000.0, 2);
+        // Send 10 messages, loss probability 0.1, error probability 0.3, lambda 1000, log level 2
     }
 }
